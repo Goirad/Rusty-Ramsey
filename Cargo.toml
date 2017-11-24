@@ -1,0 +1,9 @@
+[package]
+name = "Graph"
+version = "0.1.0"
+authors = ["goirad"]
+
+[dependencies]
+
+[profile.release]
+debug = false
