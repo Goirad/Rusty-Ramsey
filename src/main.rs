@@ -23,7 +23,7 @@ impl Color {
 #[derive(Clone)]
 struct Graph {
     num_verts: usize,
-    edges: Vec<Color>,
+    edges: Vec<Color>, //top right corner of adjacency matrix, not including diagonal
     labeling: Vec<u32>,
     labeling_sorted: Vec<u32>,
     is_null: bool,
@@ -95,7 +95,7 @@ impl Graph {
         g
     }
 
-    fn label(&self) -> Vec<u32> {
+    fn label2(&self) -> Vec<u32> {
         let mut l = Vec::new();
         for i in 0..self.num_verts {
             let mut k = 0;
@@ -107,6 +107,45 @@ impl Graph {
             l.push(k);
         }
         l
+    }
+
+    fn to_string(&self) -> String {
+        let mut s = String::new();
+        for i in self.edges.iter() {
+            match i {
+                &Color::GREEN => s.push('G'),
+                &Color::RED => s.push('R'),
+                _ => (),
+            }
+        }
+        s
+    }
+    fn label(&self) -> Vec<u32> {
+        let mut l = Vec::new();
+        for i in 0..self.num_verts {
+            let mut k = 0;
+            for j in 0..self.num_verts {
+                if self.get_edge(i, j) == &Color::RED {
+                    k += 1;
+                }
+            }
+            l.push(k);
+        }
+        let mut m = Vec::new();
+        for i in 0..self.num_verts {
+            let mut k = 0;
+            for j in 0..self.num_verts {
+                if self.get_edge(i, j) == &Color::RED {
+                    k += l[j];
+                }
+            }
+            m.push(k);
+        }
+        let mut n = Vec::new();
+        for (x, y) in l.iter().zip(m) {
+            n.push((((*x as i32) << 20) + ((y as i32)<<2) + 1) as u32);
+        }
+        n
     }
 
     fn get_next_size(&self) -> Vec<Graph> {
@@ -236,11 +275,33 @@ impl Graph {
                 verts_h.push(Vec::new());
             }
 
+
+            //normalizing vertex labelings to range 0 to num_verts-1
+            let mut c = g.labeling.clone();
+            let mut c2 = h.labeling.clone();
+            let mut k = 0;
+            for i in 0..g.num_verts {
+                let x = c[i];
+                if x > k {
+                    for j in 0..g.num_verts {
+                      if c[j] == x {
+                        c[j] = k;
+                      }
+                      if c2[j] == x {
+                        c2[j] = k;
+
+                      }
+                    }
+                    k += 1;
+                }
+            }
+
+
             for i in 0..g.num_verts {
                 //println!("{}", i);
-                orig_verts_g[g.labeling[i] as usize].push(i);
-                verts_g[g.labeling[i] as usize].push(i);
-                verts_h[h.labeling[i] as usize].push(i);
+                orig_verts_g[c[i] as usize].push(i);
+                verts_g[c[i] as usize].push(i);
+                verts_h[c2[i] as usize].push(i);
             }
             let mut collapsed_verts_h = Vec::new();
             Graph::collapse_verts(&verts_h, &mut collapsed_verts_h);
@@ -252,6 +313,34 @@ impl Graph {
             return Graph::rec_iso_check(0, &orig_verts_g, &mut verts_g, &collapsed_verts_h, g, h, &mut mem_block);
         }else{
             return false;
+        }
+    }
+
+    fn clean_isos(list: &mut Vec<Graph>) {
+        for j in 0..list.len()-1 {
+            /*if j < list.len() && list[j].labeling_sorted != list[j+1].labeling_sorted {
+                println!("{} {:?}", j, list[j].labeling_sorted);
+            }*/
+
+            if !list[j].is_null{
+                for k in j+1..list.len() {
+                    if list[k].labeling_sorted != list[j].labeling_sorted {
+
+                        break;
+                    }
+                    if !list[k].is_null {
+                        if list[j] == list[k] {
+                            list[k].is_null = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        for j in (0..list.len()).rev() {
+            if list[j].is_null {
+                list.remove(j);
+            }
         }
     }
 }
@@ -290,8 +379,32 @@ fn print_vv(v: &Vec<Vec<usize>>) {
     }
 }
 
+use std::fs::File;
+use std::fs;
+use std::path::Path;
+use std::error::Error;
+use std::io::{BufWriter, Write};
+fn dump_graph_list(list: &Vec<Graph>, n: u32) {
+    let path_str = format!("out/{}.txt", n);
+    let path = Path::new(&path_str);
+    let path_pretty = path.display();
+    match fs::create_dir("out") {
+        Err(e) => println!("! {}", e.description()),
+        Ok(_) => {},
+    }
+    let file = match File::create(&path) {
+        Err(e) => panic!("couldn't create {} : {}", path_pretty, e.description()),
+        Ok(file) => file,
+    };
+    let mut writer = BufWriter::new(&file);
+    for g in list {
+        let mut s = g.to_string();
+        s.push('\n');
+        writer.write(&s.into_bytes());
+    }
+    writer.flush();
 
-
+}
 fn main() {
     let g = Graph::new(1);
     let mut rows = Vec::new();
@@ -305,50 +418,33 @@ fn main() {
             if count % 1000 == 0 {
                 println!("{}% done generating next size", 100.0 * count as f32/rows[i-1].len() as f32);
             }*/
-            this_row.append(&mut j.get_next_size());
+            let mut t = j.get_next_size();
+            t.sort();
+            Graph::clean_isos(&mut t);
+            this_row.append(&mut t);
         }
         if this_row.len() == 0 {
             break;
         }
         println!("cleaning isos.. ({})", this_row.len());
         this_row.sort();
+        dump_graph_list(&this_row, (i+1) as u32);
         let mut c = 1;
-        {let mut h = &this_row[0];
-        for i in 0..this_row.len() {
-            if h.labeling_sorted != this_row[i].labeling_sorted {
-                c += 1;
-                h = &this_row[i];
-            }
-        }}
-        println!("found {} chunks", c);
-        for j in 0..this_row.len()-1 {
-            if j%1000 == 0 {
-                println!("{} {:?}", j, this_row[j].labeling_sorted);
-            }
-            if !this_row[j].is_null{
-                for k in j+1..this_row.len() {
-                    if this_row[k].labeling_sorted != this_row[j].labeling_sorted {
-                        break;
-                    }
-                    if !this_row[k].is_null {
-                        if this_row[j] == this_row[k] {
-                            this_row[k].is_null = true;
-                        }
-                    }
+        {
+            let mut h = &this_row[0];
+            for i in 0..this_row.len() {
+                if h.labeling_sorted != this_row[i].labeling_sorted {
+                    c += 1;
+                    h = &this_row[i];
                 }
             }
         }
 
-        for j in (0..this_row.len()).rev() {
-            if this_row[j].is_null {
-                this_row.remove(j);
-            }
-        }
+        println!("found {} chunks", c);
+        Graph::clean_isos(&mut this_row);
+        dump_graph_list(&this_row, (i+1) as u32);
         rows.push(this_row);
+
         println!("{} contains {} graphs", i+1, rows[i].len());
     }
-
-
-
-
 }
