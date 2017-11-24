@@ -38,23 +38,21 @@ pub fn factorial(num: &usize) -> usize {
     i
 }
 
-pub fn dec_to_factorial(n: usize, dig: usize) -> Vec<usize> {
+pub fn dec_to_factorial(n: usize, dig: usize, out: &mut Vec<usize>) {
     let mut num = n;
-    let mut ans = Vec::new();
+    out.clear();
     for i in 0..dig {
-        ans.push(num % (i+1));
+        out.push(num % (i+1));
         num /= i+1;
     }
-    ans.reverse();
-    ans
+    out.reverse();
 }
-fn permute(list: &Vec<usize>, perm: &Vec<usize>) -> Vec<usize> {
-    let mut ans = Vec::new();
-    let mut copy = list.clone();
+fn permute(list: &Vec<usize>, perm: &Vec<usize>, perm_scratch: &mut Vec<usize>, out: &mut Vec<usize>) {
+    out.clear();
+    perm_scratch.clone_from(list);
     for i in 0..list.len() {
-        ans.push(copy.remove(perm[i]));
+        out.push(perm_scratch.remove(perm[i]));
     }
-    ans
 }
 
 impl Graph {
@@ -108,7 +106,6 @@ impl Graph {
             }
             l.push(k);
         }
-        //l.sort_unstable();
         l
     }
 
@@ -180,23 +177,24 @@ impl Graph {
         return false;
     }
 
-    fn collapse_verts(v: &Vec<Vec<usize>>) -> Vec<usize> {
-        let mut r = Vec::new();
+    fn collapse_verts(v: &Vec<Vec<usize>>, out: &mut Vec<usize>) {
+        out.clear();
         for i in v.iter() {
-            r.append(&mut i.clone());
+            for j in i.iter() {
+                out.push(*j);
+            }
         }
-        r
     }
-    fn rec_iso_check(depth: usize, orig_verts_g: &Vec<Vec<usize>>, verts_g: Vec<Vec<usize>>, verts_h: &Vec<Vec<usize>>, collapsed_verts_h: &Vec<usize>, g: &Graph, h: &Graph) -> bool {
+    fn rec_iso_check(depth: usize, orig_verts_g: &Vec<Vec<usize>>, verts_g: &mut Vec<Vec<usize>>, collapsed_verts_h: &Vec<usize>, g: &Graph, h: &Graph, mem_block: &mut IsoMemBlock) -> bool {
 
         if depth >= g.num_verts {
 
-            let collapsed_verts_g = Graph::collapse_verts(&verts_g);
+            Graph::collapse_verts(&verts_g, mem_block.collapsed_verts_g);
 
 
             for i in 0..g.num_verts-1 {
                 for j in i+1..g.num_verts {
-                    if g.get_edge(collapsed_verts_g[i], collapsed_verts_g[j]) != h.get_edge(collapsed_verts_h[i], collapsed_verts_h[j]) {
+                    if g.get_edge(mem_block.collapsed_verts_g[i], mem_block.collapsed_verts_g[j]) != h.get_edge(collapsed_verts_h[i], collapsed_verts_h[j]) {
                         return false;
                     }
                 }
@@ -208,19 +206,19 @@ impl Graph {
 
                 for i in 0..factorial(&orig_verts_g[depth].len()) {
                     //println!("Checking {} {} {} {} permutations", i, depth, g.num_verts, &orig_verts_g[depth].len());
-                    let mut copy = verts_g.clone();
-                    let perm = dec_to_factorial(i, orig_verts_g[depth].len());
-
-                    let verts_g_new = permute(&orig_verts_g[depth], &perm);
-
-                    copy[depth] = verts_g_new;
-                    if Graph::rec_iso_check(depth+1, orig_verts_g, copy, verts_h, collapsed_verts_h, g, h) {
+                    dec_to_factorial(i, orig_verts_g[depth].len(), mem_block.perm);
+                    //println!("permutation {}", i);
+                    //println!("{:?}", mem_block.perm);
+                    //println!("{:?}", verts_g[depth]);
+                    permute(&orig_verts_g[depth], mem_block.perm, mem_block.perm_scratch, &mut verts_g[depth]);
+                    //println!("{:?}", verts_g[depth]);
+                    if Graph::rec_iso_check(depth+1, orig_verts_g, verts_g, collapsed_verts_h, g, h, mem_block) {
                         return true;
                     }
                 }
                 return false;
             }else{
-                return Graph::rec_iso_check(depth+1, orig_verts_g, verts_g, verts_h, collapsed_verts_h, g, h);
+                return Graph::rec_iso_check(depth+1, orig_verts_g, verts_g, collapsed_verts_h, g, h, mem_block);
             }
         }
 
@@ -244,14 +242,29 @@ impl Graph {
                 verts_g[g.labeling[i] as usize].push(i);
                 verts_h[h.labeling[i] as usize].push(i);
             }
-            let collapsed_verts_h = Graph::collapse_verts(&verts_h);
+            let mut collapsed_verts_h = Vec::new();
+            Graph::collapse_verts(&verts_h, &mut collapsed_verts_h);
+            let mut perm = Vec::new();
+            let mut perm_scratch = Vec::new();
+            let mut collapsed_verts_g = Vec::new();
+            let mut mem_block = IsoMemBlock {collapsed_verts_g: &mut collapsed_verts_g, perm: &mut perm, perm_scratch: &mut perm_scratch};
             //println!();
-            return Graph::rec_iso_check(0, &orig_verts_g, verts_g, &verts_h, &collapsed_verts_h, g, h);
+            return Graph::rec_iso_check(0, &orig_verts_g, &mut verts_g, &collapsed_verts_h, g, h, &mut mem_block);
         }else{
             return false;
         }
     }
 }
+
+struct IsoMemBlock<'a> {
+    //orig_verts_g:       &'a Vec<Vec<usize>>,
+    //collapsed_verts_h:  &'a Vec<usize>,
+    //verts_g:            &'a Vec<Vec<usize>>,
+    collapsed_verts_g:  &'a mut Vec<usize>,
+    perm:               &'a mut Vec<usize>,
+    perm_scratch:       &'a mut Vec<usize>,
+}
+
 impl PartialOrd for Graph {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering>{
         Some(self.labeling_sorted.cmp(&other.labeling_sorted))
@@ -286,12 +299,12 @@ fn main() {
 
     for i in 1..9 {
         let mut this_row = Vec::new();
-        let mut count = 0;
+        //let mut count = 0;
         for j in rows[i-1].iter() {
-            count += 1;
+            /*count += 1;
             if count % 1000 == 0 {
                 println!("{}% done generating next size", 100.0 * count as f32/rows[i-1].len() as f32);
-            }
+            }*/
             this_row.append(&mut j.get_next_size());
         }
         if this_row.len() == 0 {
