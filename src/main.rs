@@ -1,124 +1,110 @@
-extern crate crossbeam;
-extern crate graph_lib;
-extern crate termion;
-use graph_lib::Graph;
-use std::thread;
-use std::sync::{Arc, Mutex};
-use std::sync::mpsc::channel;
-
-fn print_vv<T: std::fmt::Debug>(v: &Vec<Vec<T>>) {
-    for i in v {
-        println!("{:?}", i);
-    }
-}
-use std::time::{Duration, Instant};
-
-use std::fs::File;
-use std::fs;
-use std::path::Path;
-use std::error::Error;
-use std::io::{BufWriter, Write};
-
-fn dump_graph_list(list: &Vec<Graph>, n: u32) {
-    let path_str = format!("out/{}.txt", n);
-    let path = Path::new(&path_str);
-    let path_pretty = path.display();
-    match fs::create_dir("out") {
-        Err(_) => {} //println!("! {}", e.description()),
-        Ok(_) => {}
-    }
-    let file = match File::create(&path) {
-        Err(e) => panic!("couldn't create {} : {}", path_pretty, e.description()),
-        Ok(file) => file,
-    };
-    let mut writer = BufWriter::new(&file);
-    for g in list {
-        let mut s = g.to_string();
-        s.push('\n');
-        writer.write(&s.into_bytes());
-    }
-    writer.flush();
-}
-
-struct ThreadUpdate {
-    curr_comp: usize,
-    thread_id: usize,
-    curr_chunk_size: usize,
-    running: bool,
-    chunks_processed: u32,
-}
-
-fn fmt_dur(d: &Duration) -> String {
-    let hours = d.as_secs() / 3600;
-    let mins = d.as_secs() / 60 % 60;
-    format!("{:04}:{:02}:{:02}", hours, mins, d.as_secs() % 60)
-}
+mod graph_lib;
+use graph_lib::{Edge, Graph, LabeledGraph, Labeling, LabelingVariant, Chunk};
+use std::str::FromStr;
+extern crate permutohedron;
 
 fn main() {
-    let g = Graph::new(1);
-
-    let mut rows = Vec::new();
-    rows.push(vec![g]);
-
-    for i in 1..7 {
-        let mut now = Instant::now();
-        let mut this_row;
-        let cand = format!("out/{}.txt", i + 1);
-        if Path::new(&cand).exists() {
-            this_row = Graph::load_file(&cand, i + 1, 10000);
-            println!("Found size {}, with {} graphs", i + 1, this_row.len());
-            rows.push(this_row);
-        } else {
-            let mut this_row = Vec::new();
-            //let mut count = 0;
-            println!("Generating next size...");
-            for j in rows[i - 1].iter() {
-                let mut t = j.get_next_size();
-                //t.sort();
-
-                Graph::clean_isos(&mut t);
-                this_row.append(&mut t);
+    let seed = graph_lib::Graph::new(1);
+    let mut gs = vec![LabeledGraph {
+        labeling: Labeling::neighbors(&seed),
+        graph: seed,
+    }];
+    for n in 2..11 {
+        println!("Starting new tier {}", n);
+        let mut next = vec![];
+        for (i, g) in gs.iter().enumerate() {
+            if i % 1000 == 0 {
+                println!("Done generating from {} graphs", i);
             }
-            if this_row.len() == 0 {
-                break;
+            let mut children = g.graph.generate_children();
+            let mut children_labeled: Vec<LabeledGraph> = vec![];
+            children.retain(|i| k4_free(i, &Edge::Red) && k4_free(i, &Edge::Green));
+
+            children
+                .into_iter()
+                .map(|c| {
+                    children_labeled.push(LabeledGraph {
+                        labeling: Labeling::neighbors2(&c),
+                        graph: c,
+                    });
+                })
+                .count();
+
+            //dedup(&mut children_labeled);
+            next.append(&mut children_labeled);
+        }
+        if next.len() == 0 { break; }
+        println!("before: {}", next.len());
+        let mut chunks = Chunk::chunkify(next);
+        println!("chunks: {}", chunks.len());
+        let mut out = vec![];
+        let mut total_comp = 0;
+        let mut total_processed = 0;
+
+        for (i, mut c) in chunks.into_iter().enumerate() {
+            total_comp += c.graphs[0].labeling.complexity;
+            total_processed += c.graphs.len();
+            if i % 1000 == 0 {
+
+                println!("done with {} {} {} {}", i, total_comp / 100, total_processed, out.len());
+                total_comp = 0;
             }
+            let mut c = c.chunk_dedup_setup();
+            //c.dedup();
+            out.append(&mut c.graphs);
+        }
+        println!("after: {}", out.len());
+        gs = out;
 
-            println!(
-                "{} finding chunks among {} graphs...",
-                fmt_dur(&now.elapsed()),
-                this_row.len()
-            );
-            now = Instant::now();
+    }
+}
 
-            dump_graph_list(&this_row, (i + 1) as u32);
-            let mut chunks = Graph::chunkify(&mut this_row);
-            println!("{} chunks({}):", fmt_dur(&now.elapsed()), chunks.len());
-            let chunk_ts = Arc::new(Mutex::new(chunks));
-            //let row_ts = Arc::new(&this_row);
+fn dedup<T: Eq>(v: &mut Vec<T>) {
+    let mut cleaned = vec![];
+    while let Some(g) = v.pop() {
+        v.retain(|h| &g != h);
+        cleaned.push(g);
+    }
+    v.clear();
+    v.append(&mut cleaned);
+}
 
-            Graph::process_tier(&mut this_row, chunk_ts);
-
-            println!(
-                "{} Writing cleaned list to disk...",
-                fmt_dur(&now.elapsed())
-            );
-
-            //Graph::clean_isos(&mut this_row);
-            /*
-                I need - a stack of slices to process, that can be read from multiple threads
-                       - a way to create n threads
-                       - each thread should just assign isNulls, cleanup is later
-
-            */
-            dump_graph_list(&this_row, (i + 1) as u32);
-            rows.push(this_row);
-
-            println!(
-                "{} {} contains {} graphs cleaned",
-                fmt_dur(&now.elapsed()),
-                i + 1,
-                rows[i].len()
-            );
+fn k3_free(g: &Graph, col: &Edge) -> bool {
+    if g.vertices < 3 {
+        return true;
+    }
+    for i in 0..g.vertices - 2 {
+        for j in i..g.vertices - 1 {
+            for k in j..g.vertices {
+                if g.get_edge(i, j) == col && g.get_edge(i, k) == col && g.get_edge(j, k) == col {
+                    return false;
+                }
+            }
         }
     }
+    true
+}
+
+fn k4_free(g: &Graph, col: &Edge) -> bool {
+    if g.vertices < 4 {
+        return true;
+    }
+    for i in 0..g.vertices - 3 {
+        for j in i..g.vertices - 2 {
+            for k in j..g.vertices - 1 {
+                for l in k..g.vertices {
+                    if g.get_edge(i, j) == col
+                        && g.get_edge(i, k) == col
+                        && g.get_edge(i, l) == col
+                        && g.get_edge(j, k) == col
+                        && g.get_edge(j, l) == col
+                        && g.get_edge(k, l) == col
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
 }

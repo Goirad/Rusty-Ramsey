@@ -4,10 +4,8 @@ version = "0.1.0"
 authors = ["goirad"]
 
 [dependencies]
-graph_lib = {path = "../graph_lib"}
 permutohedron = "*"
-crossbeam = "*"
-termion = "1"
+
 
 [profile.release]
 debug = false
