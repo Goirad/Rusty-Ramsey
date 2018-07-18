@@ -1,8 +1,17 @@
 use std::cmp::{max, min};
 use std::fmt;
 use std::str::FromStr;
+
 extern crate permutohedron;
+
 use permutohedron::Heap;
+use std::mem;
+
+use std::cmp::{Ord, Ordering};
+
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 
 #[derive(PartialEq, Eq, Copy, Clone)]
 pub enum Edge {
@@ -14,8 +23,8 @@ pub enum Edge {
 impl fmt::Debug for Edge {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Edge::Red => write!(f, "R"),
-            Edge::Green => write!(f, "G"),
+            Edge::Red => write!(f, "1"),
+            Edge::Green => write!(f, "2"),
             _ => unreachable!(),
         }
     }
@@ -105,16 +114,16 @@ impl FromStr for Graph {
                     edges: edges,
                 })
             }
-            Err(e) => Err(GraphParseError::BadNumEdges(s.len())),
+            Err(_) => Err(GraphParseError::BadNumEdges(s.len())),
         }
     }
 }
 
 impl fmt::Debug for Graph {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Graph {{ vertices: {} edges: ", self.vertices);
+        write!(f, "Graph {{ vertices: {} edges: ", self.vertices)?;
         for e in &self.edges {
-            write!(f, "{:?}", e);
+            write!(f, "{:?}", e)?;
         }
         write!(f, " }}")
     }
@@ -127,22 +136,6 @@ pub struct LabeledGraph {
 }
 
 
-
-/*
-    It might make sense to write one isomorphism checking function that runs on two graphs,
-    but for faster checks among a list, create another function that runs through the permutations once
-    and then checks against each other
-
-    fn iso_dedup(g: &LabeledGraph, others: &mut Vec<LabeledGraph>)
-    it would run in place and basically run retain once for each permutation to check
-    to be used with pop / retain if equal loop
-
-    This may or may not be any faster than running though it all again and again
-    It would have the downside of not being able to quit early if it finds an iso
-    Although I suppose that doesn't matter, because it has to run all the way until there are
-    none left or its done them all either way
-    They get removed immediately on being found so that is not a downside
-*/
 impl LabeledGraph {
     fn bin(list: &Vec<u16>) -> Vec<Vec<usize>> {
         let mut temp: Vec<(u16, Vec<usize>)> = vec![];
@@ -159,10 +152,19 @@ impl LabeledGraph {
                 temp.push((*v, vec![n]));
             }
         }
-        //temp.retain(|(label, bin)| bin.len() > 1);
-        temp.sort_unstable_by_key(|(label, bin)| *label);
-        temp.into_iter().map(|(label, bin)| bin).collect()
+        //temp.sort_unstable_by_key(|(label, verts)| verts.len());
+        temp.sort_unstable_by(|(labelx, vertsx), (labely, vertsy)|{
+            match vertsx.len().cmp(&vertsy.len()) {
+                Ordering::Equal => {
+                    labelx.cmp(labely)
+                },
+                c => c,
+            }
+        });
+        temp.into_iter().map(|(_, bin)| bin).collect()
     }
+
+
     fn collapse(list: &Vec<Vec<usize>>, out: &mut Vec<usize>) {
         out.clear();
         for i in list.iter() {
@@ -190,14 +192,15 @@ impl LabeledGraph {
             LabeledGraph::collapse(verts_g, collapsed_verts_g);
             for i in 0..collapsed_verts_h.len() - 1 {
                 for j in 0..collapsed_verts_h.len() {
-                    if     g.graph.get_edge(collapsed_verts_g[i], collapsed_verts_g[j])
-                        != h.graph.get_edge(collapsed_verts_h[i], collapsed_verts_h[j]) {
-                        return false;
-                    }
+                    if g.graph.get_edge(collapsed_verts_g[i], collapsed_verts_g[j])
+                        != h.graph.get_edge(collapsed_verts_h[i], collapsed_verts_h[j])
+                        {
+                            return false;
+                        }
                 }
             }
             return true;
-        }else {
+        } else {
             let mut c = orig_verts_g[depth].clone();
             let heap = Heap::new(&mut c);
             for i in heap {
@@ -207,10 +210,10 @@ impl LabeledGraph {
                     max_depth,
                     orig_verts_g,
                     verts_g,
-                     collapsed_verts_h,
+                    collapsed_verts_h,
                     collapsed_verts_g,
                     g,
-                    h
+                    h,
                 ) {
                     return true;
                 }
@@ -242,10 +245,9 @@ impl LabeledGraph {
                     &collapsed_verts_h,
                     &mut collapsed_verts_g,
                     g,
-                    h
+                    h,
                 )
-
-            }else{
+            } else {
                 return true;
             }
         }
@@ -257,11 +259,13 @@ impl Ord for LabeledGraph {
         self.labeling.cmp(&other.labeling)
     }
 }
+
 impl PartialOrd for LabeledGraph {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.labeling.cmp(&other.labeling))
     }
 }
+
 impl PartialEq for LabeledGraph {
     //Isomorphism algorithm, taking labels into account
 
@@ -269,6 +273,7 @@ impl PartialEq for LabeledGraph {
         LabeledGraph::is_color_iso(self, other)
     }
 }
+
 impl Eq for LabeledGraph {}
 
 #[derive(PartialEq, Eq, Debug, Ord, PartialOrd, Copy, Clone)]
@@ -286,7 +291,7 @@ pub enum LabelingVariant {
 pub struct Labeling {
     variant: LabelingVariant,
     labels: Vec<u16>,
-    hash: u64,
+    hash: Vec<u16>,
     pub complexity: u64,
 }
 
@@ -296,10 +301,6 @@ impl PartialEq for Labeling {
     }
 }
 
-use std::cmp::{Ord, Ordering};
-
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 impl Ord for Labeling {
     fn cmp(&self, other: &Self) -> Ordering {
@@ -320,7 +321,7 @@ impl PartialOrd for Labeling {
 }
 
 impl Labeling {
-    fn calc_comp<T: Eq>(list: Vec<T>) -> u64 {
+    fn calc_comp<T: Eq>(list: &Vec<T>) -> u64 {
         if list.len() < 2 {
             return 1;
         } else {
@@ -356,18 +357,18 @@ impl Labeling {
         let mut copy = labels.clone();
         copy.sort();
 
-        let mut hasher = DefaultHasher::new();
-        copy.hash(&mut hasher);
+        //let mut hasher = DefaultHasher::new();
+       // copy.hash(&mut hasher);
 
         Labeling {
             variant: LabelingVariant::Neighbors,
             labels,
-            hash: hasher.finish(),
-            complexity: Labeling::calc_comp(copy),
+            complexity: Labeling::calc_comp(&copy),
+            hash: copy,
         }
     }
     pub fn neighbors2(g: &Graph) -> Labeling {
-        let mut labels = Labeling::neighbors(g).labels;
+        let labels = Labeling::neighbors(g).labels;
         let mut new_labels = vec![];
         for i in 0..g.vertices {
             let mut red_edges = 0;
@@ -382,16 +383,17 @@ impl Labeling {
         let mut copy = new_labels.clone();
         copy.sort();
 
-        let mut hasher = DefaultHasher::new();
-        copy.hash(&mut hasher);
+        //let mut hasher = DefaultHasher::new();
+        //copy.hash(&mut hasher);
         Labeling {
             variant: LabelingVariant::Neighbors2,
-            labels,
-            hash: hasher.finish(),
-            complexity: Labeling::calc_comp(copy),
+            labels: new_labels,
+            complexity: Labeling::calc_comp(&copy),
+            hash: copy,
+
         }
     }
-    fn k3(g: &Graph) -> Labeling {
+    pub fn k3(g: &Graph) -> Labeling {
         unimplemented!()
     }
 }
@@ -412,10 +414,9 @@ fn factorial(n: u64) -> u64 {
         All have the same labeling variant and hash
     */
 pub struct Chunk {
-    pub graphs: Vec<LabeledGraph>
+    pub graphs: Vec<LabeledGraph>,
 }
 
-use std;
 impl Chunk {
     //filters out duplicate graphs, in the isomorphism sense
     pub fn chunkify(mut v: Vec<LabeledGraph>) -> Vec<Chunk> {
@@ -423,15 +424,15 @@ impl Chunk {
         let mut out = vec![];
         while let Some(i) = Chunk::find_split(&v) {
             out.push(Chunk {
-                graphs: v.split_off(i)
+                graphs: v.split_off(i),
             });
         }
-        out.push(Chunk {graphs: v});
+        out.push(Chunk { graphs: v });
         out
     }
     fn find_split(v: &Vec<LabeledGraph>) -> Option<usize> {
-        for i in (1..v.len()-1).rev() {
-            if v[i].labeling != v[i-1].labeling {
+        for i in (1..v.len() - 1).rev() {
+            if v[i].labeling != v[i - 1].labeling {
                 //println!("found split at {}", i);
                 return Some(i);
             }
@@ -445,9 +446,8 @@ impl Chunk {
             self.graphs.retain(|h| &g != h);
             cleaned.push(g);
         }
-        std::mem::swap(&mut cleaned, &mut self.graphs);
+        mem::swap(&mut cleaned, &mut self.graphs);
     }
-
 
     fn collapse(list: &Vec<Vec<usize>>) -> Vec<usize> {
         let mut out = vec![];
@@ -459,20 +459,28 @@ impl Chunk {
         out
     }
 
-    pub fn dedup2(&mut self) {
 
-    }
 
-    pub fn chunk_dedup_setup(mut self) -> Chunk {
 
-        let mut cleaned = vec![];
-        let mut temp: Vec<(LabeledGraph, Vec<usize>)> = self.graphs.into_iter().map(|h| {
-            let h_bins = LabeledGraph::bin(&h.labeling.labels);
-            let h_bins_collapsed = Chunk::collapse(&h_bins);
-            (h, h_bins_collapsed)
-        }).collect();
+    pub fn chunk_dedup(&mut self) {
+        let mut graphs = vec![];
+        mem::swap(&mut self.graphs, &mut graphs);
+
+
+        let mut temp: Vec<(LabeledGraph, Vec<usize>)> = graphs
+            .into_iter()
+            .map(|h| {
+                let h_bins = LabeledGraph::bin(&h.labeling.labels);
+                let h_bins_collapsed = h_bins.clone().into_iter().flatten().collect();
+                (h, h_bins_collapsed)
+            })
+            .collect();
+
+
+
+
         while let Some((g, mut collapsed_verts)) = temp.pop() {
-            let orig_g_bins = LabeledGraph::bin(&g.labeling.labels);
+            let mut orig_g_bins = LabeledGraph::bin(&g.labeling.labels);
             let mut g_bins = orig_g_bins.clone();
             let max_depth = g_bins.len();
             Chunk::rec_iso_check(
@@ -482,13 +490,13 @@ impl Chunk {
                 &mut g_bins,
                 &mut temp,
                 &mut collapsed_verts,
-                &g
+                &g,
             );
-            cleaned.push(g);
+            self.graphs.push(g);
         }
-        Chunk {
-            graphs: cleaned
-        }
+
+
+
     }
 
     fn rec_iso_check(
@@ -499,21 +507,22 @@ impl Chunk {
         others: &mut Vec<(LabeledGraph, Vec<usize>)>, //the vertices of h collapsed into a single vector
         collapsed_verts_g: &mut Vec<usize>,
         g: &LabeledGraph,
-    ){
+    ) {
         if depth == max_depth {
             LabeledGraph::collapse(verts_g, collapsed_verts_g);
             others.retain(|h| {
                 for i in 0..collapsed_verts_g.len() - 1 {
                     for j in 0..collapsed_verts_g.len() {
-                        if     g.graph.get_edge(collapsed_verts_g[i], collapsed_verts_g[j])
-                            != h.0.graph.get_edge(h.1[i], h.1[j]) {
-                            return true;
-                        }
+                        if g.graph.get_edge(collapsed_verts_g[i], collapsed_verts_g[j])
+                            != h.0.graph.get_edge(h.1[i], h.1[j])
+                            {
+                                return true;
+                            }
                     }
                 }
                 return false;
             });
-        }else {
+        } else {
             let mut c = orig_verts_g[depth].clone();
             let heap = Heap::new(&mut c);
             for i in heap {
@@ -525,10 +534,9 @@ impl Chunk {
                     verts_g,
                     others,
                     collapsed_verts_g,
-                    g
+                    g,
                 );
             }
         }
     }
-
 }
