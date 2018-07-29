@@ -1,11 +1,12 @@
 [package]
-name = "Graph"
+name = "rusty_ramsey"
 version = "0.1.0"
 authors = ["goirad"]
 
 [dependencies]
 permutohedron = "*"
-
+rayon = "*"
+crossbeam = "*"
 
 [profile.release]
 debug = false

@@ -73,6 +73,72 @@ impl Graph {
 
         out
     }
+    pub fn generate_children2(&self, f: &Fn(&Graph) -> bool) -> Vec<Graph> {
+        let mut out = vec![];
+        let mut temp = self.clone();
+        temp.vertices += 1;
+        let x = self.vertices * (self.vertices - 1) / 2;
+        for mut n in 0..(2usize).pow(self.vertices as u32) {
+            for _ in 0..self.vertices {
+                match n & 1 {
+                    0 => temp.edges.push(Edge::Red),
+                    1 => temp.edges.push(Edge::Green),
+                    _ => unreachable!(),
+                }
+                n >>= 1;
+            }
+            if f(&temp) {
+                let mut new = self.clone();
+                new.vertices += 1;
+                mem::swap(&mut temp, &mut new);
+                out.push(new);
+            }else{
+                temp.edges.truncate(x);
+            }
+        }
+
+        out
+    }
+}
+
+impl<'a> IntoIterator for &'a Graph {
+    type Item  = Graph;
+    type IntoIter = GraphChildrenIterator<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        GraphChildrenIterator {
+            g: self,
+            index: 0,
+            max: (2usize).pow(self.vertices as u32),
+        }
+    }
+}
+pub struct GraphChildrenIterator<'a> {
+    g: &'a Graph,
+    index: usize,
+    max: usize,
+}
+
+impl<'a> Iterator for GraphChildrenIterator<'a> {
+    type Item = Graph;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.max {
+            return None;
+        }
+        let mut n = self.index;
+        let mut child = self.g.clone();
+        child.vertices += 1;
+        for _ in 0..self.g.vertices {
+            match n & 1 {
+                0 => child.edges.push(Edge::Red),
+                1 => child.edges.push(Edge::Green),
+                _ => unreachable!(),
+            }
+            n >>= 1;
+        }
+        self.index += 1;
+        Some(child)
+    }
 }
 
 pub enum GraphParseError {
@@ -129,16 +195,265 @@ impl fmt::Debug for Graph {
     }
 }
 
+
+#[derive(PartialEq, Eq, Debug, Ord, PartialOrd, Copy, Clone)]
+pub enum LabelingVariant {
+    Neighbors,
+    Neighbors2,
+    Neighbors3,
+    K3,
+}
+
+/*
+        variant reflects the algorithm that produced the label
+        hash is an encoding of set of labels for easy non ordered comparison
+    */
 #[derive(Debug, Clone)]
-pub struct LabeledGraph {
-    pub graph: Graph,
-    pub labeling: Labeling,
+pub struct Labeling<T> {
+    variant: LabelingVariant,
+    labels: Vec<T>,
+    hash: u64,   //labels, but sorted
+    pub complexity: u64,
+}
+
+impl<T: Ord + Eq> PartialEq for Labeling<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.variant == other.variant && self.hash == other.hash
+    }
 }
 
 
-impl LabeledGraph {
-    fn bin(list: &Vec<u16>) -> Vec<Vec<usize>> {
-        let mut temp: Vec<(u16, Vec<usize>)> = vec![];
+impl<T: Eq + Ord> Eq for Labeling<T> {}
+
+
+
+impl<T: Ord> Ord for Labeling<T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.variant.cmp(&other.variant) {
+            Ordering::Equal => match self.complexity.cmp(&other.complexity).reverse() {
+                Ordering::Equal => self.hash.cmp(&other.hash),
+                r => r,
+            },
+            r => r,
+        }
+    }
+}
+
+impl<T: Ord> PartialOrd for Labeling<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Labeling<u8> {
+    pub fn neighbors(g: &Graph) -> Labeling<u8> {
+        let mut labels = vec![];
+        for i in 0..g.vertices {
+            let mut red_edges = 0;
+            for j in 0..g.vertices {
+                match *g.get_edge(i, j) {
+                    Edge::Red => red_edges += 1,
+                    _ => (),
+                }
+            }
+            labels.push(red_edges);
+        }
+        let mut copy = labels.clone();
+        copy.sort();
+
+        let mut hasher = DefaultHasher::new();
+        copy.hash(&mut hasher);
+
+        Labeling {
+            variant: LabelingVariant::Neighbors,
+            labels,
+            complexity: Labeling::calc_comp(&copy),
+            hash: hasher.finish(),
+        }
+    }
+}
+
+impl Labeling<(u8, u16)> {
+    pub fn neighbors2(g: &Graph) -> Labeling<(u8, u16)> {
+        let labels = Labeling::neighbors(g).labels;
+        let mut new_labels = vec![];
+        for i in 0..g.vertices {
+            let mut red_edges = 0;
+            for j in 0..g.vertices {
+                match *g.get_edge(i, j) {
+                    Edge::Red => red_edges += labels[j] as u16,
+                    _ => (),
+                }
+            }
+            new_labels.push((labels[i], red_edges));
+        }
+        let mut copy = new_labels.clone();
+        copy.sort();
+
+        let mut hasher = DefaultHasher::new();
+        copy.hash(&mut hasher);
+        Labeling {
+            variant: LabelingVariant::Neighbors2,
+            labels: new_labels,
+            complexity: Labeling::calc_comp(&copy),
+            hash: hasher.finish(),
+
+        }
+    }
+}
+
+impl Labeling<(u8, u16, u16)> {
+    pub fn neighbors3(g: &Graph) -> Labeling<(u8, u16, u16)> {
+        let labels = Labeling::neighbors2(g).labels;
+        let mut new_labels = vec![];
+        for i in 0..g.vertices {
+            let mut red_edges = 0;
+            for j in 0..g.vertices {
+                match *g.get_edge(i, j) {
+                    Edge::Red => red_edges += labels[j].1 as u16,
+                    _ => (),
+                }
+            }
+            new_labels.push((labels[i].0, labels[i].1, red_edges));
+        }
+        let mut copy = new_labels.clone();
+        copy.sort();
+
+        let mut hasher = DefaultHasher::new();
+        copy.hash(&mut hasher);
+        Labeling {
+            variant: LabelingVariant::Neighbors3,
+            labels: new_labels,
+            complexity: Labeling::calc_comp(&copy),
+            hash: hasher.finish(),
+
+        }
+    }
+    pub fn neighbors3_eff(g: &Graph) -> Labeling<(u8, u16, u16)> {
+        let mut labels = vec![(0u8, 0u16, 0u16); g.vertices];
+        for i in 0..g.vertices {
+            let mut red_edges = 0;
+            for j in 0..g.vertices {
+                match *g.get_edge(i, j) {
+                    Edge::Red => red_edges += 1,
+                    _ => (),
+                }
+            }
+            labels[i].0 = red_edges;
+        }
+        for i in 0..g.vertices {
+            let mut red_edges = 0;
+            for j in 0..g.vertices {
+                match *g.get_edge(i, j) {
+                    Edge::Red => red_edges += labels[j].0 as u16,
+                    _ => (),
+                }
+            }
+            labels[i].1 = red_edges;
+        }
+        for i in 0..g.vertices {
+            let mut red_edges = 0;
+            for j in 0..g.vertices {
+                match *g.get_edge(i, j) {
+                    Edge::Red => red_edges += labels[j].1 as u16,
+                    _ => (),
+                }
+            }
+            labels[i].2 = red_edges;
+        }
+        let mut copy = labels.clone();
+        copy.sort();
+        let mut hasher = DefaultHasher::new();
+        copy.hash(&mut hasher);
+
+        Labeling {
+            variant: LabelingVariant::Neighbors3,
+            labels: labels,
+            complexity: Labeling::calc_comp(&copy),
+            hash: hasher.finish(),
+        }
+    }
+}
+
+impl Labeling<(u16, u8, u16, u16)> {
+    //count number of k3s
+    pub fn k3(g: &Graph) -> Labeling<(u16, u8, u16, u16)> {
+        let old_labels = Labeling::neighbors3_eff(g).labels;
+        let mut new_labels = vec![];
+        for i in 0..g.vertices {
+            let mut connected = vec![];
+            for j in 0..g.vertices {
+                match *g.get_edge(i, j) {
+                    Edge::Red => connected.push(j),
+                    _ => (),
+                }
+            }
+            let mut k3s = 0u16;
+            if connected.len() > 1 {
+                for j in 0..connected.len()-1 {
+                    for k in j..connected.len(){
+                        match *g.get_edge(connected[j], connected[k]) {
+                            Edge::Red => k3s += 1,
+                            _ => (),
+                        }
+                    }
+                }
+            }
+
+            let x = (k3s, old_labels[i].0, old_labels[i].1, old_labels[i].2);
+            //println!("{:?}", x);
+            new_labels.push(x);
+
+        }
+        let mut copy = new_labels.clone();
+        copy.sort();
+        let mut hasher = DefaultHasher::new();
+        copy.hash(&mut hasher);
+
+        Labeling {
+            variant: LabelingVariant::K3,
+            labels: new_labels,
+            complexity: Labeling::calc_comp(&copy),
+            hash: hasher.finish(),
+
+        }
+    }
+}
+
+impl<T: Eq> Labeling<T> {
+    fn calc_comp(list: &Vec<T>) -> u64 {
+        if list.len() < 2 {
+            return 1;
+        } else {
+            let mut complexity = 1;
+            let mut current = &list[0];
+            let mut streak = 1;
+            for i in list.iter().skip(1) {
+                if i == current {
+                    streak += 1;
+                } else {
+                    current = i;
+                    complexity *= factorial(streak);
+                    streak = 1;
+                }
+            }
+            complexity *= factorial(streak);
+            complexity
+        }
+    }
+}
+
+
+#[derive(Debug, Clone)]
+pub struct LabeledGraph<T> {
+    pub graph: Graph,
+    pub labeling: Labeling<T>,
+}
+
+
+impl<T: Ord + Copy> LabeledGraph<T> {
+    fn bin(list: &Vec<T>) -> Vec<Vec<usize>> {
+        let mut temp: Vec<(T, Vec<usize>)> = vec![];
         for (n, v) in list.iter().enumerate() {
             let mut found = false;
             for (label, bin) in temp.iter_mut() {
@@ -165,14 +480,7 @@ impl LabeledGraph {
     }
 
 
-    fn collapse(list: &Vec<Vec<usize>>, out: &mut Vec<usize>) {
-        out.clear();
-        for i in list.iter() {
-            for j in i.iter() {
-                out.push(*j);
-            }
-        }
-    }
+
     /*
         Idea is to permute all vertices in g to see if one matches h
         First we put them into bins according to their labels
@@ -185,11 +493,11 @@ impl LabeledGraph {
         verts_g: &mut Vec<Vec<usize>>,  //the current permutation hypothesis we're working on
         collapsed_verts_h: &Vec<usize>, //the vertices of h collapsed into a single vector
         collapsed_verts_g: &mut Vec<usize>,
-        g: &LabeledGraph,
-        h: &LabeledGraph,
+        g: &LabeledGraph<T>,
+        h: &LabeledGraph<T>,
     ) -> bool {
         if depth == max_depth {
-            LabeledGraph::collapse(verts_g, collapsed_verts_g);
+            collapse(verts_g, collapsed_verts_g);
             for i in 0..collapsed_verts_h.len() - 1 {
                 for j in 0..collapsed_verts_h.len() {
                     if g.graph.get_edge(collapsed_verts_g[i], collapsed_verts_g[j])
@@ -224,7 +532,7 @@ impl LabeledGraph {
     /*
         This function does the setup of creating the bins, keeping track of the original, etc
     */
-    pub fn is_color_iso(g: &LabeledGraph, h: &LabeledGraph) -> bool {
+    pub fn is_color_iso(g: &LabeledGraph<T>, h: &LabeledGraph<T>) -> bool {
         if g.labeling != h.labeling {
             return false;
         } else {
@@ -233,7 +541,7 @@ impl LabeledGraph {
             if g_bins.len() > 0 {
                 let h_bins = LabeledGraph::bin(&h.labeling.labels);
                 let mut collapsed_verts_h = vec![];
-                LabeledGraph::collapse(&h_bins, &mut collapsed_verts_h);
+                collapse(&h_bins, &mut collapsed_verts_h);
                 let mut collapsed_verts_g = vec![];
                 let max_depth = g_bins.len();
 
@@ -254,149 +562,37 @@ impl LabeledGraph {
     }
 }
 
-impl Ord for LabeledGraph {
+fn collapse(list: &Vec<Vec<usize>>, out: &mut Vec<usize>) {
+    out.clear();
+    for i in list.iter() {
+        for j in i.iter() {
+            out.push(*j);
+        }
+    }
+}
+
+impl<T: Ord + Copy + Eq> Ord for LabeledGraph<T> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.labeling.cmp(&other.labeling)
     }
 }
 
-impl PartialOrd for LabeledGraph {
+impl<T: Ord + Copy> PartialOrd for LabeledGraph<T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.labeling.cmp(&other.labeling))
     }
 }
 
-impl PartialEq for LabeledGraph {
+impl<T: Ord + Eq + Copy> PartialEq for LabeledGraph<T> {
     //Isomorphism algorithm, taking labels into account
-
-    fn eq(&self, other: &LabeledGraph) -> bool {
+    fn eq(&self, other: &LabeledGraph<T>) -> bool {
         LabeledGraph::is_color_iso(self, other)
     }
 }
 
-impl Eq for LabeledGraph {}
-
-#[derive(PartialEq, Eq, Debug, Ord, PartialOrd, Copy, Clone)]
-pub enum LabelingVariant {
-    Neighbors,
-    Neighbors2,
-    K3,
-}
-
-/*
-        variant reflects the algorithm that produced the label
-        hash is an encoding of set of labels for easy non ordered comparison
-    */
-#[derive(Eq, Debug, Clone)]
-pub struct Labeling {
-    variant: LabelingVariant,
-    labels: Vec<u16>,
-    hash: Vec<u16>,
-    pub complexity: u64,
-}
-
-impl PartialEq for Labeling {
-    fn eq(&self, other: &Self) -> bool {
-        self.variant == other.variant && self.hash == other.hash
-    }
-}
+impl<T: Ord + Eq + Copy> Eq for LabeledGraph<T> {}
 
 
-impl Ord for Labeling {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match self.variant.cmp(&other.variant) {
-            Ordering::Equal => match self.complexity.cmp(&other.complexity).reverse() {
-                Ordering::Equal => self.hash.cmp(&other.hash),
-                r => r,
-            },
-            r => r,
-        }
-    }
-}
-
-impl PartialOrd for Labeling {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Labeling {
-    fn calc_comp<T: Eq>(list: &Vec<T>) -> u64 {
-        if list.len() < 2 {
-            return 1;
-        } else {
-            let mut complexity = 1;
-            let mut current = &list[0];
-            let mut streak = 1;
-            for i in list.iter().skip(1) {
-                if i == current {
-                    streak += 1;
-                } else {
-                    current = i;
-                    complexity *= factorial(streak);
-                    streak = 1;
-                }
-            }
-            complexity *= factorial(streak);
-            complexity
-        }
-    }
-    //this assigns to each vertex the number of red edges incident to it
-    pub fn neighbors(g: &Graph) -> Labeling {
-        let mut labels = vec![];
-        for i in 0..g.vertices {
-            let mut red_edges = 0;
-            for j in 0..g.vertices {
-                match *g.get_edge(i, j) {
-                    Edge::Red => red_edges += 1,
-                    _ => (),
-                }
-            }
-            labels.push(red_edges);
-        }
-        let mut copy = labels.clone();
-        copy.sort();
-
-        //let mut hasher = DefaultHasher::new();
-       // copy.hash(&mut hasher);
-
-        Labeling {
-            variant: LabelingVariant::Neighbors,
-            labels,
-            complexity: Labeling::calc_comp(&copy),
-            hash: copy,
-        }
-    }
-    pub fn neighbors2(g: &Graph) -> Labeling {
-        let labels = Labeling::neighbors(g).labels;
-        let mut new_labels = vec![];
-        for i in 0..g.vertices {
-            let mut red_edges = 0;
-            for j in 0..g.vertices {
-                match *g.get_edge(i, j) {
-                    Edge::Red => red_edges += labels[j],
-                    _ => (),
-                }
-            }
-            new_labels.push(red_edges);
-        }
-        let mut copy = new_labels.clone();
-        copy.sort();
-
-        //let mut hasher = DefaultHasher::new();
-        //copy.hash(&mut hasher);
-        Labeling {
-            variant: LabelingVariant::Neighbors2,
-            labels: new_labels,
-            complexity: Labeling::calc_comp(&copy),
-            hash: copy,
-
-        }
-    }
-    pub fn k3(g: &Graph) -> Labeling {
-        unimplemented!()
-    }
-}
 
 fn factorial(n: u64) -> u64 {
     if n < 2 {
@@ -413,13 +609,13 @@ fn factorial(n: u64) -> u64 {
         A list of graphs ready for checking for isomorphisms
         All have the same labeling variant and hash
     */
-pub struct Chunk {
-    pub graphs: Vec<LabeledGraph>,
+pub struct Chunk<T> {
+    pub graphs: Vec<LabeledGraph<T>>,
 }
 
-impl Chunk {
+impl<T: Ord + Eq + Copy> Chunk<T> {
     //filters out duplicate graphs, in the isomorphism sense
-    pub fn chunkify(mut v: Vec<LabeledGraph>) -> Vec<Chunk> {
+    pub fn chunkify(mut v: Vec<LabeledGraph<T>>) -> Vec<Chunk<T>> {
         v.sort();
         let mut out = vec![];
         while let Some(i) = Chunk::find_split(&v) {
@@ -430,7 +626,7 @@ impl Chunk {
         out.push(Chunk { graphs: v });
         out
     }
-    fn find_split(v: &Vec<LabeledGraph>) -> Option<usize> {
+    fn find_split(v: &Vec<LabeledGraph<T>>) -> Option<usize> {
         for i in (1..v.len() - 1).rev() {
             if v[i].labeling != v[i - 1].labeling {
                 //println!("found split at {}", i);
@@ -467,7 +663,7 @@ impl Chunk {
         mem::swap(&mut self.graphs, &mut graphs);
 
 
-        let mut temp: Vec<(LabeledGraph, Vec<usize>)> = graphs
+        let mut temp: Vec<(LabeledGraph<T>, Vec<usize>)> = graphs
             .into_iter()
             .map(|h| {
                 let h_bins = LabeledGraph::bin(&h.labeling.labels);
@@ -504,12 +700,12 @@ impl Chunk {
         max_depth: usize,
         orig_verts_g: &Vec<Vec<usize>>, //original bins, with more than one element
         verts_g: &mut Vec<Vec<usize>>,  //the current permutation hypothesis we're working on
-        others: &mut Vec<(LabeledGraph, Vec<usize>)>, //the vertices of h collapsed into a single vector
+        others: &mut Vec<(LabeledGraph<T>, Vec<usize>)>, //the vertices of h collapsed into a single vector
         collapsed_verts_g: &mut Vec<usize>,
-        g: &LabeledGraph,
+        g: &LabeledGraph<T>,
     ) {
         if depth == max_depth {
-            LabeledGraph::collapse(verts_g, collapsed_verts_g);
+            collapse(verts_g, collapsed_verts_g);
             others.retain(|h| {
                 for i in 0..collapsed_verts_g.len() - 1 {
                     for j in 0..collapsed_verts_g.len() {
